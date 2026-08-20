@@ -2,6 +2,7 @@ from kagglehub import KaggleDatasetAdapter
 from dotenv import load_dotenv
 import pandas as pd
 import numpy as np
+import questionary
 
 # Have to load the environment variable prior to loading the kagglehub and kaggle libraries in python
 load_dotenv()
@@ -47,12 +48,18 @@ def dfDescriber(df) -> None:
     print()
 
 
-    
+
 
 def main():
     # loading descriptive statistics
     df = kaggleDfLoader(ACCT_STRING, DF_STRING)
-    dfDescriber(df)
+
+    describe_choice = questionary.select(
+        "Would you like descriptive statistics of the dataset to be presented?",
+        choices=["yes", "no"]
+        ).ask()
+    if describe_choice == "yes":
+        dfDescriber(df)
 
     # looking into the string columns
 
