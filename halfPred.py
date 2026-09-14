@@ -11,10 +11,6 @@ import kagglehub
 import kaggle
 kaggle.api.authenticate()
 
-# Setting script variables
-ACCT_STRING = "saife245/english-premier-league"
-DF_STRING = "final_dataset.csv"
-
 def kaggleDfLoader(acctStr: str, dfStr: str):
     # Load a DataFrame with a specific version of a CSV
     df = kagglehub.dataset_load(
@@ -116,9 +112,10 @@ def initial_preprocessDf(df):
         "ATGS": "at_goals_scored",
         "HTGC": "ht_goals_conceded",
         "ATGC": "at_goals_conceded",
-        "HTP": "ht_points",
-        "ATP": "at_points",
-        "MW": "match_week"
+        "HTP": "ht_avg_ppg_played",
+        "ATP": "at_avg_ppg_played",
+        "MW": "match_week",
+
         })
 
     return df
@@ -213,6 +210,12 @@ def feature_engineer(df):
         current_df["at_season_points"] = season_at_points_series
         current_df["ht_ranking"] = ht_ranking
         current_df["at_ranking"] = at_ranking
+
+        # create a weighted form points column for the away and home teams
+
+        # create a games played column for the home and away teams
+
+        # concatenate all of the dfs back together into one large dataframe again
     
     return season_dict
 
@@ -248,32 +251,55 @@ def data_extract(df):
 
 
 def main():
-    # loading descriptive statistics
-    df = kaggleDfLoader(ACCT_STRING, DF_STRING)
+    # # Setting script variables
+    # ACCT_STRING = "saife245/english-premier-league"
+    # DF_STRING = "final_dataset.csv"
 
+    # Setting new script vars
+    ACCT_STRING = "excel4soccer/espn-soccer-data"
+    LEAGUES_DF_STRING = "base_data/leagues.csv"
+    TEAMS_DF_STRING = "base_data/teams.csv"
+    FIXTURES_DF_STRING = "base_data/fixtures.csv"
+    STANDINGS_DF_STRING = "base_data/standings.csv"
+    TEAM_STATS_PER_FIXTURE = "base_data/teamStats.csv"
+    KEY_EVENTS_STRING = "keyEvents_data/keyEvents_2024_ENG.1.csv"
+    KEY_EVENT_KEY_DF_STRING = "base_data/keyEventDescription.csv"
+
+    # loading datasets
+    leagues_df = kaggleDfLoader(ACCT_STRING, LEAGUES_DF_STRING)
+
+
+    # loading descriptive statistics
     describe_choice = questionary.select(
         "Would you like descriptive statistics of the dataset to be presented?",
         choices=["yes", "no"]
         ).ask()
     if describe_choice == "yes":
-        dfDescriber(df)
+        dfDescriber(leagues_df)
 
-    # preprocess the dataset to get rid of or transform any non-numerical columns
-    df = initial_preprocessDf(df)
-    # check_df = df[df["Date"].str[-2:] == "02"]
-    # print(check_df["match_week"].head())
 
-    # engineer more useful features
-    dicty = feature_engineer(df)
-    print(dicty["00/01 Season"].iloc[:30, 1:])
-    print(dicty["00/01 Season"].iloc[-30:, 1:])
+    """Important characteristics that we can grab from the datasets above include Goals, Shots, Penalties, Fouls, 
+    Offsides, clearances, crosses, number of corners, number of substitutions, number of saves, yellow cards, and red cards 
+    all before half time to be used to make predictions
+    """
 
-    # final preprocessing to transform string features to numerical ones and to scale features for ml model fitting
+    # # preprocess the dataset to get rid of or transform any non-numerical columns
+    # df = initial_preprocessDf(df)
+    # # check_df = df[df["Date"].str[-2:] == "02"]
+    # # print(check_df["match_week"].head())
+
+    # # engineer more useful features
+    # dicty = feature_engineer(df)
+    # print(dicty["00/01 Season"].iloc[:30, 10:])
+    # print(dicty["00/01 Season"].iloc[-30:, 10:])
+    # print(dicty["00/01 Season"].dtypes)
+
+    # # final preprocessing to transform string features to numerical ones and to scale features for ml model fitting
     
-    # # seperate the data for training
-    # X_train, X_test, y_train, y_test = data_extract(df)
-    # print(X_train.head(), y_train.head())
-    # print(X_test.head(), y_test.head())
+    # # # seperate the data for training
+    # # X_train, X_test, y_train, y_test = data_extract(df)
+    # # print(X_train.head(), y_train.head())
+    # # print(X_test.head(), y_test.head())
 
 
 if __name__ == "__main__":
