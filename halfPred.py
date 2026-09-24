@@ -32,6 +32,7 @@ def dfDescriber(df) -> None:
     print("-"*60)
     print()
 
+    print("Each of the columns have this many null values")
     print(df.isna().sum())
     print("-"*60)
     print()
@@ -45,23 +46,23 @@ def dfDescriber(df) -> None:
     print("-"*60)
     print()
 
-    # looking into the string columns
-    str_df = df.loc[:, df.dtypes == "str"]
-    print(str_df.head(15))
-    results_dict = {}
-    for col in str_df.columns[3:14]:
-        print(f"The unique values in {col} are {str_df[col].unique()}")
-        results_dict[col] = str_df[col].unique()
-        ind_dict = {}
-        for val in str_df[col].unique():
-            number = sum([1 if x==val else 0 for x in str_df[col]])
-            ind_dict[val] = number
-            print(f"{val} shows up {number} times.")
-        results_dict[col] = ind_dict
+    # # looking into the string columns
+    # str_df = df.loc[:, df.dtypes == "str"]
+    # print(str_df.head(15))
+    # results_dict = {}
+    # for col in str_df.columns[3:14]:
+    #     print(f"The unique values in {col} are {str_df[col].unique()}")
+    #     results_dict[col] = str_df[col].unique()
+    #     ind_dict = {}
+    #     for val in str_df[col].unique():
+    #         number = sum([1 if x==val else 0 for x in str_df[col]])
+    #         ind_dict[val] = number
+    #         print(f"{val} shows up {number} times.")
+    #     results_dict[col] = ind_dict
 
-    print(results_dict)
-    print("-"*60)
-    print()
+    # print(results_dict)
+    # print("-"*60)
+    # print()
 
 
 def dfVisualizer(df) -> None:
@@ -266,7 +267,13 @@ def main():
     KEY_EVENT_KEY_DF_STRING = "base_data/keyEventDescription.csv"
 
     # loading datasets
-    leagues_df = kaggleDfLoader(ACCT_STRING, LEAGUES_DF_STRING)
+    # leagues_df = kaggleDfLoader(ACCT_STRING, LEAGUES_DF_STRING)
+    teams_df = kaggleDfLoader(ACCT_STRING, TEAMS_DF_STRING)
+    fixtures_df = kaggleDfLoader(ACCT_STRING, FIXTURES_DF_STRING)
+    standings_df = kaggleDfLoader(ACCT_STRING, STANDINGS_DF_STRING)
+    stats_per_fixture_df = kaggleDfLoader(ACCT_STRING, TEAM_STATS_PER_FIXTURE)
+    key_events_df = kaggleDfLoader(ACCT_STRING, KEY_EVENTS_STRING)
+    key_event_key = kaggleDfLoader(ACCT_STRING, KEY_EVENT_KEY_DF_STRING)
 
 
     # loading descriptive statistics
@@ -275,13 +282,66 @@ def main():
         choices=["yes", "no"]
         ).ask()
     if describe_choice == "yes":
-        dfDescriber(leagues_df)
+        dfDescriber(standings_df)
 
 
     """Important characteristics that we can grab from the datasets above include Goals, Shots, Penalties, Fouls, 
     Offsides, clearances, crosses, number of corners, number of substitutions, number of saves, yellow cards, and red cards 
     all before half time to be used to make predictions
     """
+
+    # joining each of the datasets together to create a training set
+    # lets start with the key_events_df and key_events_key
+    tester_df = key_events_df.merge(key_event_key, on="keyEventTypeId", how="inner")
+
+    # join the home team and away team ids with the new df
+    tester_df = tester_df.merge(fixtures_df[["eventId", "homeTeamId", "awayTeamId"]], on="eventId", how="inner")
+
+    # join the teams with their ids
+    tester_df = tester_df.merge(teams_df[["teamId", "name"]], on="teamId", how="inner")
+    tester_df = tester_df.rename(columns={"name": "teamName"})
+
+    # standings_df[["updateDate", "updateTime"]] = standings_df["timeStamp"].str.split(" ", expand=True)
+    # tester_df[["updateDate", "updateTime"]] = tester_df["updateDateTime"].str.split(" ", expand=True)
+
+    # create a column in the tester df that shows the number of times that a team has played a game
+    indexes = [0]
+    for i in range(1, len(tester_df)):
+        if (tester_df["keyEventOrder"][i] < tester_df["keyEventOrder"][i-1]) and (tester_df["keyEventOrder"][i] < 3):
+            indexes.append(i)
+
+    team_dict = {team: 0 for team in tester_df["teamName"]}
+    final_col_vals = []
+    for i in range(0, len(indexes)):
+        ind_list = []
+        if i != len(indexes)-1:
+            for team in tester_df.loc[indexes[i]:indexes[i+1]-1, "teamName"]:
+                if team not in ind_list:
+                    ind_list.append(team)
+                    team_dict[team] += 1
+                final_col_vals.append(team_dict[team])
+
+        else:
+            for team in tester_df.loc[indexes[i]:, "teamName"]:
+                if team not in ind_list:
+                    ind_list.append(team)
+                    team_dict[team] += 1
+                final_col_vals.append(team_dict[team])
+
+    tester_df["gamesPlayed"] = final_col_vals
+    print(list(set(tester_df["gamesPlayed"])))
+
+    # join each teams standing with their row in the df
+    excluded_cols = ["year", "last_matchDateTime", "next_opponent", "next_homeAway", "next_matchDateTime"]
+    tester_df = tester_df.merge(standings_df.loc[:, ~standings_df.columns.isin(excluded_cols)], on=["gamesPlayed", "seasonType", "teamId"])
+    print(list(set(standings_df["gamesPlayed"])))
+
+    print(tester_df.head())
+    print(tester_df.columns)
+    print(tester_df.shape)
+    print(list(set(tester_df["keyEventName"])))
+
+    # tester_df.to_csv("tester.csv", index=False)
 
     # # preprocess the dataset to get rid of or transform any non-numerical columns
     # df = initial_preprocessDf(df)
