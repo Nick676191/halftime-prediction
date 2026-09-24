@@ -304,7 +304,7 @@ def main():
     # standings_df[["updateDate", "updateTime"]] = standings_df["timeStamp"].str.split(" ", expand=True)
     # tester_df[["updateDate", "updateTime"]] = tester_df["updateDateTime"].str.split(" ", expand=True)
 
-    # create a column in the tester df that shows the number of times that a team has played a game
+    # create a column in the tester df that shows the number of times that a team has played a game for joining with standings df
     indexes = [0]
     for i in range(1, len(tester_df)):
         if (tester_df["keyEventOrder"][i] < tester_df["keyEventOrder"][i-1]) and (tester_df["keyEventOrder"][i] < 3):
@@ -331,7 +331,7 @@ def main():
     tester_df["gamesPlayed"] = final_col_vals
     print(list(set(tester_df["gamesPlayed"])))
 
-    # join each teams standing with their row in the df
+    # join each teams standing with their row in the df based off of three characteristics
     excluded_cols = ["year", "last_matchDateTime", "next_opponent", "next_homeAway", "next_matchDateTime"]
     tester_df = tester_df.merge(standings_df.loc[:, ~standings_df.columns.isin(excluded_cols)], on=["gamesPlayed", "seasonType", "teamId"])
     print(list(set(standings_df["gamesPlayed"])))
