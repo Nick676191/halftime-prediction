@@ -1,3 +1,5 @@
 # environment file
 .env
 
+# any sort of data file
+data/

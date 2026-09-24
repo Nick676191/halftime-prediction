@@ -4,6 +4,8 @@ import pandas as pd
 import numpy as np
 import questionary
 from sklearn.model_selection import train_test_split
+from eplHalftimePredictor import (espn_match_table, attach_standings, load_football_data,
+                               football_data_features, join_espn_to_football_data)
 
 # Have to load the environment variable prior to loading the kagglehub and kaggle libraries in python
 load_dotenv()
@@ -304,42 +306,38 @@ def main():
     # standings_df[["updateDate", "updateTime"]] = standings_df["timeStamp"].str.split(" ", expand=True)
     # tester_df[["updateDate", "updateTime"]] = tester_df["updateDateTime"].str.split(" ", expand=True)
 
-    # create a column in the tester df that shows the number of times that a team has played a game for joining with standings df
-    indexes = [0]
-    for i in range(1, len(tester_df)):
-        if (tester_df["keyEventOrder"][i] < tester_df["keyEventOrder"][i-1]) and (tester_df["keyEventOrder"][i] < 3):
-            indexes.append(i)
+    # --- Replaces the gamesPlayed loop + standings_df merge -------------------
+    # standings.csv is an end-of-season snapshot (every row has 38 GP), so it
+    # can't describe the table before a given match. Rebuild it from results.
+    # Note: key events with no teamId (Kickoff, Halftime, ...) were dropped by
+    # the teams merge above, so the halftime marker is taken from key_events_df.
+    key_events_named = key_events_df.merge(key_event_key, on="keyEventTypeId", how="left")
+    # Check these once: ESPN_EVENT_PATTERNS in epl_halftime_data.py is matched against them
+    print("Key event names:", sorted(key_events_named["keyEventName"].astype(str).unique()))
 
-    team_dict = {team: 0 for team in tester_df["teamName"]}
-    final_col_vals = []
-    for i in range(0, len(indexes)):
-        ind_list = []
-        if i != len(indexes)-1:
-            for team in tester_df.loc[indexes[i]:indexes[i+1]-1, "teamName"]:
-                if team not in ind_list:
-                    ind_list.append(team)
-                    team_dict[team] += 1
-                final_col_vals.append(team_dict[team])
+    # one row per match: FT result, first-half event counts, pre-match table
+    espn_matches = espn_match_table(key_events_named, fixtures_df, teams=teams_df)
+    print(espn_matches.head())
+    print(f"ESPN match table: {espn_matches.shape[0]} matches, {espn_matches.shape[1]} columns")
 
-        else:
-            for team in tester_df.loc[indexes[i]:, "teamName"]:
-                if team not in ind_list:
-                    ind_list.append(team)
-                    team_dict[team] += 1
-                final_col_vals.append(team_dict[team])
+    # if you still want the per-event tester_df, this adds own_*/opp_* table columns to it
+    tester_df = attach_standings(tester_df, espn_matches)
+    print(tester_df[["eventId", "teamName", "keyEventName", "is_home",
+                     "own_gp", "own_pts", "own_position", "opp_position"]].head())
 
-    tester_df["gamesPlayed"] = final_col_vals
-    print(list(set(tester_df["gamesPlayed"])))
+    # --- football-data.co.uk: many seasons, halftime score, pre-match odds -----
+    fd = load_football_data(range(2005, 2025))
+    fd_features = football_data_features(fd)
+    print(f"football-data training table: {fd_features.shape}")
 
-    # join each teams standing with their row in the df based off of three characteristics
-    excluded_cols = ["year", "last_matchDateTime", "next_opponent", "next_homeAway", "next_matchDateTime"]
-    tester_df = tester_df.merge(standings_df.loc[:, ~standings_df.columns.isin(excluded_cols)], on=["gamesPlayed", "seasonType", "teamId"])
-    print(list(set(standings_df["gamesPlayed"])))
+    # ESPN first-half cards/subs/penalties added to the 2024-25 football-data rows
+    fd_2425 = fd_features[fd_features["Season"] == "2024-2025"]
+    combined_2425 = join_espn_to_football_data(espn_matches, fd_2425)
 
-    print(tester_df.head())
-    print(tester_df.columns)
-    print(tester_df.shape)
-    print(list(set(tester_df["keyEventName"])))
+    espn_matches.to_csv("espn_matches_2024_25.csv", index=False)
+    fd_features.to_csv("fd_features_2005_2025.csv", index=False)
+    combined_2425.to_csv("combined_2024_25.csv", index=False)
+    print("Saved espn_matches_2024_25.csv, fd_features_2005_2025.csv, combined_2024_25.csv")
 
     # tester_df.to_csv("tester.csv", index=False)
 

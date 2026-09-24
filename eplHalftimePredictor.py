@@ -1,27 +1,52 @@
 """
 EPL halftime -> full-time prediction: data preparation helpers.
 
-Three pieces:
+Pieces:
   1. load_football_data()      - multi-season EPL results with HALFTIME score + match stats
-                                 (football-data.co.uk, free CSVs, 1993/94 onward)
+                                 + pre-match odds (football-data.co.uk, free CSVs)
   2. build_prematch_table()    - league table as it stood BEFORE each match
                                  (replaces the ESPN standings.csv, which is a single
                                  end-of-season snapshot -> the "only 38 GP" problem)
-  3. espn_* helpers            - attach that table to your ESPN tester_df and derive
-                                 first-half event counts from ESPN keyEvents / plays
+  3. espn_match_table()        - turns ESPN keyEvents + fixtures + teams into ONE ROW PER
+                                 MATCH: first-half goals/cards/subs/penalties per side,
+                                 full-time result, and the pre-match table
+  4. join_espn_to_football_data() - adds the ESPN first-half columns to the
+                                 football-data.co.uk rows (odds, HT score) for the same match
 
 Nothing here uses information from after halftime of the match being predicted,
 except the target column itself.
 """
+
+import re
 
 import numpy as np
 import pandas as pd
 
 
 # ---------------------------------------------------------------------------
+# small utilities
+# ---------------------------------------------------------------------------
+
+def _pick(df: pd.DataFrame, candidates, what: str) -> str:
+    """Return the first column of `candidates` present in df, or raise a clear error."""
+    for c in candidates:
+        if c in df.columns:
+            return c
+    raise KeyError(f"Couldn't find a column for {what}. Tried {list(candidates)}. "
+                   f"Available columns: {list(df.columns)}")
+
+
+def season_from_date(d: pd.Series) -> pd.Series:
+    """EPL season label from a date: Aug 2024 .. May 2025 -> '2024-2025'."""
+    d = pd.to_datetime(d)
+    start = np.where(d.dt.month >= 7, d.dt.year, d.dt.year - 1)
+    return pd.Series([f"{y}-{y + 1}" for y in start], index=d.index)
+
+
+# ---------------------------------------------------------------------------
 # 1. football-data.co.uk  (recommended primary training set)
 # ---------------------------------------------------------------------------
-# Columns you get per match (notes: https://www.football-data.co.uk/notes.txt):
+# Columns per match (notes: https://www.football-data.co.uk/notes.txt):
 #   HTHG/HTAG/HTR  halftime goals & result      FTHG/FTAG/FTR  full-time (target)
 #   HS/AS shots, HST/AST shots on target, HC/AC corners, HF/AF fouls,
 #   HY/AY yellows, HR/AR reds, Referee, plus pre-match betting odds (B365H/D/A etc.)
@@ -78,7 +103,11 @@ def build_prematch_table(matches: pd.DataFrame, date: str, home: str, away: str,
     Matches on the same date don't see each other (conservative, no leakage).
     """
     m = matches[[date, home, away, home_goals, away_goals] + ([season] if season else [])].copy()
-    m[date] = pd.to_datetime(m[date])
+    # compare on calendar day so same-day kickoffs never see each other
+    d = pd.to_datetime(m[date])
+    if d.dt.tz is not None:
+        d = d.dt.tz_localize(None)
+    m[date] = d.dt.normalize()
     if season is None:
         season = "_season"
         m[season] = 0
@@ -93,7 +122,7 @@ def build_prematch_table(matches: pd.DataFrame, date: str, home: str, away: str,
     long = long.sort_values(["season", "team", "date"])
 
     g = long.groupby(["season", "team"], sort=False)
-    # shift(1) => stats strictly before this match
+    # subtracting this match => stats strictly before this match
     for col in ["pts", "gf", "ga"]:
         long[f"pre_{col}"] = g[col].cumsum() - long[col]
     long["pre_gp"] = g.cumcount()
@@ -102,8 +131,8 @@ def build_prematch_table(matches: pd.DataFrame, date: str, home: str, away: str,
     long["pre_form"] = g["pts"].transform(
         lambda s: s.shift(1).rolling(form_window, min_periods=1).sum()).fillna(0)
 
-    # league position before each match date: rank every team on its latest
-    # pre-date totals (points, then GD, then GF, like the EPL table)
+    # league position before each match date: rank every team on its pre-date
+    # totals (points, then GD, then GF, like the EPL table)
     positions = []
     for (sea, d), grp in long.groupby(["season", "date"]):
         before = long[(long.season == sea) & (long.date < d)]
@@ -122,90 +151,203 @@ def build_prematch_table(matches: pd.DataFrame, date: str, home: str, away: str,
     wide = long.pivot(index="idx", columns="side", values=cols)
     wide.columns = [f"{side}_{c.replace('pre_', '')}" for c, side in wide.columns]
     wide = wide.reindex(matches.index)
+    # before a team's first game the table order is meaningless -> mid-table
+    n_teams = long.groupby("season")["team"].nunique()
+    mid = (matches[season].map(n_teams) + 1) / 2 if season in matches.columns else (long.team.nunique() + 1) / 2
+    for side in ("home", "away"):
+        wide.loc[wide[f"{side}_gp"] == 0, f"{side}_position"] = mid if np.isscalar(mid) else mid[wide[f"{side}_gp"] == 0]
     wide["position_diff"] = wide.away_position - wide.home_position  # + means home higher
     wide["ppg_diff"] = wide.home_ppg - wide.away_ppg
     return wide
 
 
 # ---------------------------------------------------------------------------
-# 3. ESPN (Kaggle excel4soccer) helpers
+# 3. ESPN (Kaggle excel4soccer) -> one row per match
 # ---------------------------------------------------------------------------
-# Adjust these if your column names differ.
-ESPN = dict(
-    event="eventId", date="date", league="leagueId",
-    home="homeTeamId", away="awayTeamId",
-    home_score="homeTeamScore", away_score="awayTeamScore",
-    period="period", team="teamId", event_type_text="keyEventText",  # or 'text'/'typeText' in plays
+
+# Feature name -> (include regex, exclude regex), matched against keyEventName
+# (lower-cased). Run  print(tester_df["keyEventName"].unique())  and adjust if
+# your file uses different wording.
+ESPN_EVENT_PATTERNS = {
+    "goals":            (r"goal|penalty - scored", r"disallow|kick|no goal|own goal"),
+    "own_goals":        (r"own goal", None),
+    "pens_scored":      (r"penalty - scored", None),
+    "pens_missed":      (r"penalty - (?:missed|saved)", None),
+    "yellows":          (r"yellow", None),
+    "reds":             (r"red card", None),
+    "subs":             (r"substitution", None),
+    "var":              (r"\bvar\b", None),
+}
+
+FIXTURE_COLS = dict(
+    date=("date", "matchDate", "startDate", "dateTime"),
+    home_score=("homeTeamScore", "homeScore"),
+    away_score=("awayTeamScore", "awayScore"),
 )
-EPL_LEAGUE_ID = 700  # ESPN's league id for eng.1; check leagues.csv to confirm
 
 
-def espn_prematch_table(fixtures: pd.DataFrame, league_id=EPL_LEAGUE_ID, cols=ESPN) -> pd.DataFrame:
-    """Pre-match table for every EPL fixture, keyed by eventId. Replaces standings.csv."""
-    fx = fixtures[fixtures[cols["league"]] == league_id].copy()
-    fx = fx.dropna(subset=[cols["home_score"], cols["away_score"]])  # finished matches only
-    table = build_prematch_table(fx, date=cols["date"], home=cols["home"], away=cols["away"],
-                                 home_goals=cols["home_score"], away_goals=cols["away_score"])
-    return pd.concat([fx[[cols["event"]]], table], axis=1)
-
-
-def attach_standings(tester_df: pd.DataFrame, fixtures: pd.DataFrame,
-                     league_id=EPL_LEAGUE_ID, cols=ESPN) -> pd.DataFrame:
+def _first_half_mask(ke: pd.DataFrame, name_col: str) -> pd.Series:
     """
-    Join pre-match table onto tester_df.
-      - if tester_df has one row per match (eventId unique): adds home_*/away_* columns
-      - if one row per team per match (eventId + teamId): adds own_*/opp_* columns
+    True for events before halftime. Uses a `period` column if the file has one;
+    otherwise uses the position of the 'Halftime' event in keyEventOrder.
     """
-    table = espn_prematch_table(fixtures, league_id, cols)
-    ev, team = cols["event"], cols["team"]
-    if tester_df[ev].is_unique or team not in tester_df.columns:
-        return tester_df.merge(table, on=ev, how="left", validate="many_to_one")
+    if "period" in ke.columns:
+        return ke["period"] == 1
+    order = _pick(ke, ["keyEventOrder", "sequence", "order"], "event order")
+    is_ht = ke[name_col].astype(str).str.lower().str.contains("halftime|half time|half-time")
+    ht_order = ke.loc[is_ht].groupby("eventId")[order].min()
+    missing = set(ke["eventId"]) - set(ht_order.index)
+    if missing:
+        print(f"WARNING: {len(missing)} matches have no Halftime event; their "
+              f"first-half counts will be 0. e.g. {list(missing)[:5]}")
+    return ke[order] < ke["eventId"].map(ht_order).fillna(-np.inf)
 
-    # per-team rows: figure out which side each row is
-    sides = fixtures[[ev, cols["home"], cols["away"]]]
-    out = tester_df.merge(sides, on=ev, how="left").merge(table, on=ev, how="left")
-    is_home = out[team] == out[cols["home"]]
-    stat_cols = [c[5:] for c in table.columns if c.startswith("home_")]
+
+def espn_first_half_counts(key_events: pd.DataFrame, fixtures: pd.DataFrame,
+                           name_col: str = "keyEventName",
+                           patterns=ESPN_EVENT_PATTERNS) -> pd.DataFrame:
+    """
+    One row per eventId with ht_home_<x> / ht_away_<x> counts for first-half events.
+    `key_events` = keyEvents csv already merged with keyEventDescription (has keyEventName).
+    Events with no teamId (kickoff, halftime, ...) are ignored.
+    """
+    ke = key_events[_first_half_mask(key_events, name_col)].dropna(subset=["teamId"]).copy()
+    text = ke[name_col].astype(str).str.lower()
+    for feat, (inc, exc) in patterns.items():
+        hit = text.str.contains(inc, regex=True)
+        if exc:
+            hit &= ~text.str.contains(exc, regex=True)
+        ke[feat] = hit.astype(int)
+
+    fx = fixtures[["eventId", "homeTeamId", "awayTeamId"]].drop_duplicates("eventId")
+    ke = ke.drop(columns=[c for c in ["homeTeamId", "awayTeamId"] if c in ke.columns])
+    ke = ke.merge(fx, on="eventId", how="inner")
+    ke["side"] = np.where(ke["teamId"] == ke["homeTeamId"], "home", "away")
+
+    feats = list(patterns)
+    wide = ke.pivot_table(index="eventId", columns="side", values=feats,
+                          aggfunc="sum", fill_value=0)
+    wide.columns = [f"ht_{side}_{feat}" for feat, side in wide.columns]
+    wanted = [f"ht_{s}_{f}" for f in feats for s in ("home", "away")]
+    wide = wide.reindex(columns=wanted, fill_value=0)
+    # every match in fixtures gets a row, 0 where nothing happened
+    wide = wide.reindex(fx["eventId"].unique(), fill_value=0).rename_axis("eventId")
+    return wide.reset_index()
+
+
+def espn_match_table(key_events: pd.DataFrame, fixtures: pd.DataFrame,
+                     teams: pd.DataFrame | None = None,
+                     name_col: str = "keyEventName") -> pd.DataFrame:
+    """
+    ONE ROW PER MATCH for every match that appears in `key_events`:
+        eventId, date, season, home/away ids (+ names), FT score, target (H/D/A),
+        ht_home_* / ht_away_* first-half counts, home_* / away_* pre-match table.
+
+    `key_events` is your tester_df (or keyEvents merged with keyEventDescription).
+    Using the event ids from key_events means we only keep EPL matches that were
+    actually played, without needing a league id.
+    """
+    date_c = _pick(fixtures, FIXTURE_COLS["date"], "match date in fixtures")
+    hs_c = _pick(fixtures, FIXTURE_COLS["home_score"], "home score in fixtures")
+    as_c = _pick(fixtures, FIXTURE_COLS["away_score"], "away score in fixtures")
+
+    fx = fixtures[fixtures["eventId"].isin(key_events["eventId"].unique())]
+    fx = fx.drop_duplicates("eventId").dropna(subset=[hs_c, as_c]).copy()
+    fx = fx[["eventId", date_c, "homeTeamId", "awayTeamId", hs_c, as_c]].rename(
+        columns={date_c: "date", hs_c: "home_score", as_c: "away_score"})
+    fx["date"] = pd.to_datetime(fx["date"], utc=True).dt.tz_convert("Europe/London").dt.tz_localize(None)
+    fx["season"] = season_from_date(fx["date"])
+    fx = fx.sort_values("date").reset_index(drop=True)
+
+    fx["target"] = np.select([fx.home_score > fx.away_score, fx.home_score == fx.away_score],
+                             ["H", "D"], "A")
+
+    table = build_prematch_table(fx, "date", "homeTeamId", "awayTeamId",
+                                 "home_score", "away_score", season="season")
+    out = pd.concat([fx, table], axis=1)
+    out = out.merge(espn_first_half_counts(key_events, fx, name_col), on="eventId", how="left")
+    out["ht_home_goals_total"] = out.ht_home_goals + out.ht_away_own_goals
+    out["ht_away_goals_total"] = out.ht_away_goals + out.ht_home_own_goals
+
+    if teams is not None:
+        names = teams.drop_duplicates("teamId").set_index("teamId")
+        name_c = _pick(names, ["name", "displayName", "teamName"], "team name in teams")
+        out.insert(4, "home_team", out.homeTeamId.map(names[name_c]))
+        out.insert(5, "away_team", out.awayTeamId.map(names[name_c]))
+    return out
+
+
+def attach_standings(tester_df: pd.DataFrame, match_table: pd.DataFrame) -> pd.DataFrame:
+    """
+    Put the pre-match table on each row of tester_df (any granularity: one row
+    per key event, per team-match, or per match). Adds own_*/opp_* + is_home
+    when tester_df has a teamId, otherwise home_*/away_*.
+    """
+    stat_cols = [c[5:] for c in match_table.columns
+                 if c.startswith("home_") and c not in ("home_score", "home_team")]
+    tbl = match_table[["eventId", "homeTeamId", "awayTeamId"]
+                      + [f"home_{s}" for s in stat_cols] + [f"away_{s}" for s in stat_cols]]
+    base = tester_df.drop(columns=[c for c in ["homeTeamId", "awayTeamId"] if c in tester_df.columns])
+    out = base.merge(tbl, on="eventId", how="left", validate="many_to_one")
+    if "teamId" not in out.columns:
+        return out
+    is_home = out["teamId"] == out["homeTeamId"]
     for s in stat_cols:
         out[f"own_{s}"] = np.where(is_home, out[f"home_{s}"], out[f"away_{s}"])
         out[f"opp_{s}"] = np.where(is_home, out[f"away_{s}"], out[f"home_{s}"])
     out["is_home"] = is_home.astype(int)
-    drop = [c for c in table.columns if c.startswith(("home_", "away_"))]
-    return out.drop(columns=drop + [cols["home"], cols["away"]])
+    return out.drop(columns=[f"{p}_{s}" for p in ("home", "away") for s in stat_cols])
 
 
-# keyword -> feature name. Matched case-insensitively against the event text column.
-FIRST_HALF_EVENTS = {
-    "goal": "goals", "penalty": "penalties", "own goal": "own_goals",
-    "yellow card": "yellows", "red card": "reds", "substitution": "subs",
-    "offside": "offsides", "corner": "corners", "foul": "fouls",
-    "shot on target|saved": "shots_on_target", "attempt|shot": "shots",
+# ---------------------------------------------------------------------------
+# 4. ESPN <-> football-data.co.uk
+# ---------------------------------------------------------------------------
+
+# ESPN team name -> football-data.co.uk team name (only the ones that differ)
+ESPN_TO_FD_NAMES = {
+    "AFC Bournemouth": "Bournemouth",
+    "Brighton & Hove Albion": "Brighton",
+    "Ipswich Town": "Ipswich",
+    "Leicester City": "Leicester",
+    "Leeds United": "Leeds",
+    "Luton Town": "Luton",
+    "Manchester City": "Man City",
+    "Manchester United": "Man United",
+    "Newcastle United": "Newcastle",
+    "Nottingham Forest": "Nott'm Forest",
+    "Sheffield United": "Sheffield United",
+    "Tottenham Hotspur": "Tottenham",
+    "West Ham United": "West Ham",
+    "Wolverhampton Wanderers": "Wolves",
 }
 
 
-def espn_first_half_counts(events: pd.DataFrame, fixtures: pd.DataFrame,
-                           keywords=FIRST_HALF_EVENTS, cols=ESPN) -> pd.DataFrame:
+def join_espn_to_football_data(espn: pd.DataFrame, fd: pd.DataFrame,
+                               name_map=ESPN_TO_FD_NAMES) -> pd.DataFrame:
     """
-    Count first-half (period == 1) events per match and side from ESPN keyEvents
-    or plays data. Use plays/commentary for shots, corners, offsides and fouls;
-    keyEvents only carries goals, cards and subs.
-    Returns one row per eventId with ht_home_<x> / ht_away_<x> columns.
+    Add ESPN first-half columns (ht_home_*/ht_away_*) to football-data rows.
+    Joins on season + home team + away team (each pairing happens once a season),
+    so kickoff-time/timezone differences in the dates don't matter.
+    Prints a check of ESPN first-half goals against football-data HTHG/HTAG.
     """
-    ev, team = cols["event"], cols["team"]
-    e = events[events[cols["period"]] == 1].copy()
-    text = e[cols["event_type_text"]].astype(str).str.lower()
-    for pattern, name in keywords.items():
-        e[name] = text.str.contains(pattern, regex=True).astype(int)
-    counts = e.groupby([ev, team])[list(keywords.values())].sum().reset_index()
+    if "home_team" not in espn.columns:
+        raise KeyError("espn table needs home_team/away_team names: call espn_match_table(..., teams=teams_df)")
+    e = espn.copy()
+    e["HomeTeam"] = e.home_team.replace(name_map)
+    e["AwayTeam"] = e.away_team.replace(name_map)
+    e = e.rename(columns={"season": "Season"})
+    ht_cols = [c for c in e.columns if c.startswith("ht_")]
+    merged = fd.merge(e[["Season", "HomeTeam", "AwayTeam", "eventId"] + ht_cols],
+                      on=["Season", "HomeTeam", "AwayTeam"], how="inner", validate="one_to_one")
 
-    fx = fixtures[[ev, cols["home"], cols["away"]]]
-    counts = counts.merge(fx, on=ev, how="inner")
-    counts["side"] = np.where(counts[team] == counts[cols["home"]], "home", "away")
-    wide = counts.pivot_table(index=ev, columns="side", values=list(keywords.values()),
-                              aggfunc="sum", fill_value=0)
-    wide.columns = [f"ht_{side}_{stat}" for stat, side in wide.columns]
-    # matches with no first-half events of a kind should read 0, not NaN
-    return wide.reindex(fx[ev].unique(), fill_value=0).rename_axis(ev).reset_index()
+    unmatched = set(e.HomeTeam) - set(fd.loc[fd.Season.isin(e.Season), "HomeTeam"])
+    if unmatched:
+        print(f"WARNING: ESPN team names not found in football-data: {unmatched} "
+              f"-> add them to ESPN_TO_FD_NAMES")
+    ok = ((merged.ht_home_goals_total == merged.HTHG) & (merged.ht_away_goals_total == merged.HTAG))
+    print(f"Joined {len(merged)} of {len(e)} ESPN matches. ESPN first-half goals match "
+          f"football-data HT score in {ok.mean():.1%} of them.")
+    return merged
 
 
 if __name__ == "__main__":
