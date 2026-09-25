@@ -1,7 +1,10 @@
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+
 
 # splitting the data
 def split_data(data: pd.DataFrame):
@@ -62,11 +65,29 @@ def main():
     # random forest
     rfc = RandomForestClassifier()
     rfc.fit(X_train_scaled, y_train)
+    preds = rfc.predict(X_test_scaled)
 
     # evaluation
     accuracy = rfc.score(X_test_scaled, y_test)
     print(f"Random Forest Accuracy: {accuracy}")
 
+    # testing code 
+    # Get unique values and their corresponding counts
+    values, counts = np.unique(y_test, return_counts=True)
+
+    # Combine them into a readable format (dictionary or zip)
+    frequencies = dict(zip(values, counts))
+
+    print("Values:", values)
+    print("Counts:", counts)
+    print("Combined:", frequencies)
+
+    conf_mat = confusion_matrix(y_test, preds)
+    disp = ConfusionMatrixDisplay(confusion_matrix=conf_mat, display_labels=["A", "D", "H"])
+    disp.plot(cmap=plt.cm.Blues)
+
+    plt.title("Confusion Matrix")
+    plt.show()
 
 if __name__ == "__main__":
     main()

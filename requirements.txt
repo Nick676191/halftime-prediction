@@ -2,8 +2,11 @@ attrs==26.1.0
 bleach==6.4.0
 certifi==2026.7.22
 charset-normalizer==3.5.1
+contourpy==1.4.0
+cycler==0.12.1
 dotenv==0.9.9
 fastjsonschema==2.22.2
+fonttools==4.66.0
 idna==3.19
 joblib==1.5.3
 jsonschema==4.26.0
@@ -13,7 +16,9 @@ jupytext==1.19.5
 kaggle==2.2.4
 kagglehub==1.0.2
 kagglesdk==0.1.37
+kiwisolver==1.5.1
 markdown-it-py==4.2.0
+matplotlib==3.11.2
 mdit-py-plugins==0.6.1
 mdurl==0.1.2
 narwhals==2.25.0
@@ -21,9 +26,11 @@ nbformat==5.11.1
 numpy==2.5.2
 packaging==26.3
 pandas==3.0.5
+pillow==12.3.0
 platformdirs==4.11.3
 prompt_toolkit==3.0.53
 protobuf==7.35.1
+pyparsing==3.3.3
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.3
 python-slugify==8.0.4
