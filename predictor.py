@@ -1,14 +1,87 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import LinearSVC, SVC
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.neighbors import KNeighborsClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import RandomizedSearchCV
 from sklearn.multiclass import OneVsOneClassifier, OneVsRestClassifier, OutputCodeClassifier
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+
+# visualizing the relationship between independent variables and the target variable
+def df_plotter(data: pd.DataFrame):
+    independent_cont_cols = ["position_diff", "ppg_diff"]
+    for col in independent_cont_cols:
+        # setup plot style
+        sns.set_theme(style="whitegrid")
+        plt.figure(figsize=(10, 6))
+
+        # generate the KDE plot
+        # Replace 'continuous_feature_column' and 'target_column' with your actual DataFrame columns
+        sns.kdeplot(
+            data=data,
+            x=col,
+            hue="target",
+            fill=True,
+            common_norm=False,
+            palette="viridis",
+            alpha=0.5,
+            linewidth=2,
+        )
+
+        # refine labels
+        plt.title(
+            f"Density Distribution of {col} by Target Class", fontsize=14, pad=15
+        )
+        plt.xlabel(f"{col} Values", fontsize=12)
+        plt.ylabel("Density", fontsize=12)
+
+        plt.tight_layout()
+        plt.show(block=False)
+
+    discrete_ind_vars = ["ht_goal_diff", "diff_gd", "diff_gf", "diff_ga"]
+    for var in discrete_ind_vars:
+        # setup plot
+        sns.set_theme(style="whitegrid")
+        plt.figure(figsize=(10, 6))
+
+        # generate grouped bar chart
+        sns.countplot(
+            data=data,
+            x=var,
+            hue="target",
+            palette="muted",
+            edgecolor="black",
+            alpha=0.85,
+        )
+
+        # limit axis if certain columns
+        if var == "diff_gd":
+            # sets the limit across indexes rather than x-axis values
+            plt.xlim(85,105)
+        if var == "diff_gf":
+            plt.xlim(55,70)
+        if var == "diff_ga":
+            plt.xlim(35,58)
+
+        # refine labels
+        plt.title(
+            f"Distribution of Target Categories across {var} Levels",
+            fontsize=14,
+            pad=15,
+        )
+        plt.xlabel(f"{var} Levels", fontsize=12)
+        plt.ylabel("Count / Frequency", fontsize=12)
+        plt.legend(title="Target", bbox_to_anchor=(1.05, 1), loc="upper left")
+
+        plt.tight_layout()
+        plt.show(block=False)
+
+    return None
 
 # splitting the data
 def split_data(data: pd.DataFrame):
@@ -35,6 +108,18 @@ def preproc(df: pd.DataFrame):
     # drop unnecessary string columns
     drop_cols = ["Date", "HomeTeam", "AwayTeam", "HTR"]
     df = df.drop(columns=drop_cols)
+
+    # change up the odds columns
+    odds_cols = ["B365H", "B365D", "B365A"]
+    inv = 1 / df[odds_cols]
+    probs = inv.div(inv.sum(axis=1), axis=0)
+    df = df.drop(columns=odds_cols)
+    df[["p_home", "p_draw", "p_away"]] = probs.values
+
+    # adding diff columns for goal differential, goals against, and goals for during the season
+    df["diff_gd"] = df["home_gd"] - df["away_gd"]
+    df["diff_ga"] = df["home_ga"] - df["away_ga"]
+    df["diff_gf"] = df["home_gf"] - df["away_gf"]
 
     return df
 
@@ -126,21 +211,19 @@ def evaluate_multiclass_model(mult_model, X_test_scaled, y_test):
 def main():
     # checking the data and value counts for the target variable
     initial_fd = pd.read_csv("./data/fd_features_2005_2025.csv")
-    print(f"D: {len(initial_fd[initial_fd["target"] == "D"])}")
-    print(f"A: {len(initial_fd[initial_fd["target"] == "A"])}")
-    print(f"H: {len(initial_fd[initial_fd["target"] == "H"])}")
+    # print(f"D: {len(initial_fd[initial_fd["target"] == "D"])}")
+    # print(f"A: {len(initial_fd[initial_fd["target"] == "A"])}")
+    # print(f"H: {len(initial_fd[initial_fd["target"] == "H"])}")
 
     # preprocess data
     pp_df = preproc(initial_fd)
 
+    # # plot data for viz of trends
+    # df_plotter(pp_df)
+
     # split the data into training and testing sets and scale for the algorithm
     X_train, y_train, X_test, y_test = split_data(pp_df)
     X_train_scaled, X_test_scaled = feature_scale(X_train, X_test)
-
-    print(f"X_train_len: {len(X_train_scaled)}")
-    print(f"X_test_len: {len(X_test_scaled)}")
-    print(f"y_train_len: {len(y_train)}")
-    print(f"y_test_len: {len(y_test)}")
 
     # train some classifiers
     # rand forest
@@ -165,8 +248,8 @@ def main():
         "loss": ["hinge", "squared_hinge"],
         "multi_class": ["ovr", "crammer_singer"]
     }
-    model_search_cv = fit_model_search_cv(svm, svm_param_grid, X_train_scaled, y_train)
-    best_linear_svm, l_svm_b_params = evaluate_model(model_search_cv, X_test_scaled, y_test)
+    # model_search_cv = fit_model_search_cv(svm, svm_param_grid, X_train_scaled, y_train)
+    # best_linear_svm, l_svm_b_params = evaluate_model(model_search_cv, X_test_scaled, y_test)
 
     # support vector machine
     svc = SVC(random_state=4)
@@ -181,11 +264,6 @@ def main():
     # model_search_cv = fit_model_search_cv(svc, svc_param_grid, X_train_scaled, y_train)
     # best_svc_model, svm_b_params = evaluate_model(model_search_cv, X_test_scaled, y_test)
 
-    # # naive bayes
-    # mnb = MultinomialNB()
-    # mnb.fit(X_train_scaled, y_train)
-    # print(f"The accuracy of the multinomial naive bayes model is: {mnb.score(X_test_scaled, y_test)}")
-
     # K-Neighbors Classifier
     knn = KNeighborsClassifier()
     knn_param_grid = {
@@ -198,16 +276,24 @@ def main():
     # model_search_cv = fit_model_search_cv(knn, knn_param_grid, X_train_scaled, y_train)
     # best_knn_model, knn_b_params = evaluate_model(model_search_cv, X_test_scaled, y_test)
 
-    # train logistic regression or hist gradient boosting models
-    
+    # train logistic regression
+    lr = LogisticRegression(random_state=4)
+    lr_param_grid = {
+        "penalty": ["l1", "l2", "elasticnet", None],
+        "C": [0.001, 0.01, 0.1, 1, 10, 100, 1000],
+        "tol": [0.000001, 0.00001, 0.0001, 0.001, 0.01, 0.1, 1],
+        "fit_intercept": [True, False],
+        "solver": ["lbfgs", "newton-cg", "newton-cholesky", "sag", "saga"],
+        "max_iter": [100, 500, 1000]
+    }
+    model_search_cv = fit_model_search_cv(lr, lr_param_grid, X_train_scaled, y_train)
+    best_lr_model, lr_b_params = evaluate_model(model_search_cv, X_test_scaled, y_test)
 
-    # look at changing the strategy of classification between one v one, one v rest, and an output code classifier
-    ovo_clf, ovr_clf, oc_clf = train_diff_classifiers(best_linear_svm, l_svm_b_params, X_train_scaled, y_train)
-    evaluate_multiclass_model(ovo_clf, X_test_scaled, y_test)
-    evaluate_multiclass_model(ovr_clf, X_test_scaled, y_test)
-    evaluate_multiclass_model(oc_clf, X_test_scaled, y_test)
-
-    
+    # # look at changing the strategy of classification between one v one, one v rest, and an output code classifier
+    # ovo_clf, ovr_clf, oc_clf = train_diff_classifiers(best_linear_svm, l_svm_b_params, X_train_scaled, y_train)
+    # evaluate_multiclass_model(ovo_clf, X_test_scaled, y_test)
+    # evaluate_multiclass_model(ovr_clf, X_test_scaled, y_test)
+    # evaluate_multiclass_model(oc_clf, X_test_scaled, y_test)
 
     # keeping all plots open at the end of the script
     plt.show()
