@@ -3,8 +3,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.svm import LinearSVC
+from sklearn.svm import LinearSVC, SVC
 from sklearn.naive_bayes import MultinomialNB
+from sklearn.neighbors import KNeighborsClassifier
 from sklearn.model_selection import RandomizedSearchCV
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
@@ -85,7 +86,7 @@ def evaluate_model(trained_model, X_test_scaled, y_test):
     plt.title("Confusion Matrix")
     plt.show()
 
-    return None
+    return best_model
 
 
 def main():
@@ -114,9 +115,9 @@ def main():
         "max_features": ["sqrt", "log2", None]
     }
     # model_search_cv = fit_model_search_cv(rfc, rf_param_grid, X_train_scaled, y_train)
-    # evaluate_model(model_search_cv, X_test_scaled, y_test)
+    # best_rfc = evaluate_model(model_search_cv, X_test_scaled, y_test)
 
-    # support vector machine
+    # linear support vector machine
     svm = LinearSVC(random_state=4)
     svm_param_grid = {
         "C": [0.01, 0.1, 1, 10, 100, 1000],
@@ -126,15 +127,40 @@ def main():
         "multi_class": ["ovr", "crammer_singer"]
     }
     # model_search_cv = fit_model_search_cv(svm, svm_param_grid, X_train_scaled, y_train)
-    # evaluate_model(model_search_cv, X_test_scaled, y_test)
+    # best_linear_svm = evaluate_model(model_search_cv, X_test_scaled, y_test)
+
+    # support vector machine
+    svc = SVC(random_state=4)
+    svc_param_grid = {
+        "C": [0.01, 0.1, 1, 10, 100, 1000],
+        "kernel": ["poly", "rbf", "sigmoid"],
+        "degree": [2, 3],
+        "gamma": ["scale", "auto"],
+        "tol": [0.000001, 0.00001, 0.0001, 0.001, 0.01, 0.1, 1],
+        "class_weight": ["balanced", None]
+    }
+    model_search_cv = fit_model_search_cv(svc, svc_param_grid, X_train_scaled, y_train)
+    best_svc_model = evaluate_model(model_search_cv, X_test_scaled, y_test)
 
     # # naive bayes
     # mnb = MultinomialNB()
     # mnb.fit(X_train_scaled, y_train)
     # print(f"The accuracy of the multinomial naive bayes model is: {mnb.score(X_test_scaled, y_test)}")
 
+    # K-Neighbors Classifier
+    knn = KNeighborsClassifier()
+    knn_param_grid = {
+        "n_neighbors": [3, 5, 7, 10, 20],
+        "weights": ["uniform", "distance"],
+        "algorithm": ["auto", "brute"],
+        "p": [1, 2]
+    }
+
+    # model_search_cv = fit_model_search_cv(knn, knn_param_grid, X_train_scaled, y_train)
+    # best_knn_model = evaluate_model(model_search_cv, X_test_scaled, y_test)
+
     # Maybe look at changing the strategy of classification between one v one, one v rest, and an output code classifier
-    
+
 
 if __name__ == "__main__":
     main()
